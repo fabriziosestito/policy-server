@@ -3370,6 +3370,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
