@@ -18,13 +18,12 @@ mod metrics;
 mod raw_review;
 mod server;
 mod settings;
-mod worker;
+mod workers;
 
 mod policy_downloader;
 use policy_downloader::Downloader;
 
-mod worker_pool;
-use worker_pool::WorkerPool;
+use workers::pool::WorkerPool;
 
 mod communication;
 use communication::{EvalRequest, WorkerPoolBootRequest};
