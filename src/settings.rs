@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 
+use policy_evaluator::policy_evaluator::PolicySettings;
 use policy_evaluator::policy_metadata::ContextAwareResource;
 use serde::Deserialize;
 use serde_yaml::Value;
@@ -39,7 +40,7 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn settings_to_json(&self) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    pub fn settings_to_json(&self) -> Result<Option<PolicySettings>> {
         match self.settings.as_ref() {
             None => Ok(None),
             Some(settings) => {
