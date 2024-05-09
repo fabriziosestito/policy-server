@@ -20,6 +20,10 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use policy_evaluator::sqlx::{
+    migrate::MigrateDatabase,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+};
 use policy_evaluator::{
     callback_handler::{CallbackHandler, CallbackHandlerBuilder},
     kube,
@@ -27,6 +31,7 @@ use policy_evaluator::{
         sigstore::{ManualTrustRoot, SigstoreTrustRoot},
         TrustRoot,
     },
+    sqlx::{Sqlite, SqlitePool},
     wasmtime,
 };
 use rayon::prelude::*;
@@ -95,8 +100,18 @@ impl PolicyServer {
             None
         };
 
+        Sqlite::create_database("sqlite://ps.db").await?;
+        let conn = SqliteConnectOptions::new()
+            .filename("ps.db")
+            .create_if_missing(true)
+            .synchronous(SqliteSynchronous::Normal)
+            .journal_mode(SqliteJournalMode::Wal);
+
+        let db_pool = SqlitePool::connect_with(conn).await?;
+
         let mut callback_handler_builder =
             CallbackHandlerBuilder::new(callback_handler_shutdown_channel_rx)
+                .db_pool(db_pool)
                 .registry_config(config.sources.clone())
                 .trust_root(manual_root.clone());
 
