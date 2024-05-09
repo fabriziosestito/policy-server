@@ -10,6 +10,11 @@ use policy_server::metrics::setup_metrics;
 use policy_server::tracing::setup_tracing;
 use policy_server::PolicyServer;
 
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = cli::build_cli().get_matches();
