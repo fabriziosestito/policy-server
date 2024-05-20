@@ -35,7 +35,7 @@ use policy_evaluator::{
     wasmtime,
 };
 use rayon::prelude::*;
-use std::{fs, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{fs, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{oneshot, Semaphore},
     time,
@@ -100,7 +100,10 @@ impl PolicyServer {
             None
         };
 
-        let conn = SqliteConnectOptions::from_str("sqlite::memory:")?
+        Sqlite::create_database("sqlite://ps.db").await?;
+        let conn = SqliteConnectOptions::new()
+            .filename("ps.db")
+            .create_if_missing(true)
             .synchronous(SqliteSynchronous::Normal)
             .journal_mode(SqliteJournalMode::Wal);
 
