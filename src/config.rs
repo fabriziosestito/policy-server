@@ -28,6 +28,7 @@ pub struct Config {
     pub addr: SocketAddr,
     pub sources: Option<Sources>,
     pub policies: HashMap<String, Policy>,
+    pub groups: HashMap<String, Group>,
     pub policies_download_dir: PathBuf,
     pub ignore_kubernetes_connection_failure: bool,
     pub always_accept_admission_reviews_on_namespace: Option<String>,
@@ -59,6 +60,7 @@ impl Config {
         let addr = api_bind_address(matches)?;
 
         let policies = policies(matches)?;
+        let groups = groups(matches)?;
         let policies_download_dir = matches
             .get_one::<String>("policies-download-dir")
             .map(PathBuf::from)
@@ -147,6 +149,7 @@ impl Config {
             addr,
             sources,
             policies,
+            groups,
             policies_download_dir,
             ignore_kubernetes_connection_failure,
             tls_config,
@@ -200,6 +203,14 @@ fn policies(matches: &clap::ArgMatches) -> Result<HashMap<String, Policy>> {
     })
 }
 
+fn groups(matches: &clap::ArgMatches) -> Result<HashMap<String, Group>> {
+    let groups_file = Path::new(matches.get_one::<String>("groups").unwrap());
+    let settings_file = File::open(groups_file)?;
+    let groups: HashMap<String, Group> = serde_yaml::from_reader(settings_file)?;
+
+    Ok(groups)
+}
+
 fn verification_config(matches: &clap::ArgMatches) -> Result<Option<LatestVerificationConfig>> {
     match matches.get_one::<String>("verification-path") {
         None => Ok(None),
@@ -225,6 +236,11 @@ fn remote_server_options(matches: &clap::ArgMatches) -> Result<Option<Sources>> 
     }
 
     Ok(sources)
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct Group {
+    pub expression: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]

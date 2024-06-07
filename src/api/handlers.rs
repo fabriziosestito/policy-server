@@ -9,6 +9,7 @@ use policy_evaluator::{
     policy_evaluator::ValidateRequest,
 };
 
+use rhai::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task;
@@ -136,6 +137,68 @@ pub(crate) async fn validate_handler(
     .map_err(handle_evaluation_error)?;
 
     populate_span_with_policy_evaluation_results(&response);
+
+    Ok(Json(AdmissionReviewResponse::new(response)))
+}
+
+pub(crate) async fn validate_group_handler(
+    extract::State(state): extract::State<Arc<ApiServerState>>,
+    extract::Path(group_id): extract::Path<String>,
+    JsonExtractor(admission_review): JsonExtractor<AdmissionReviewRequest>,
+) -> Result<Json<AdmissionReviewResponse>, (StatusCode, ApiError)> {
+    debug!(admission_review = %serde_json::to_string(&admission_review).unwrap().as_str());
+
+    let expression = state.groups.get(&group_id).map_or_else(
+        || {
+            error!("Group not found: {}", group_id);
+            Err((
+                StatusCode::NOT_FOUND,
+                ApiError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("Group not found: {}", group_id),
+                },
+            ))
+        },
+        |group| {
+            let expression = group.expression.clone();
+            Ok(expression)
+        },
+    )?;
+
+    let mut rhai_engine = Engine::new_raw();
+
+    for (policy_id, _) in state.policies.clone() {
+        let policy_id = policy_id.clone();
+
+        dbg!(policy_id.clone());
+        let state = state.clone();
+        let admission_review = admission_review.clone();
+        rhai_engine.register_fn(policy_id.clone().as_str(), move || {
+            let response = state
+                .evaluation_environment
+                .validate(
+                    &policy_id,
+                    &ValidateRequest::AdmissionRequest(admission_review.request.clone()),
+                )
+                .unwrap();
+
+            response.allowed
+        });
+    }
+
+    let rhai_engine = rhai_engine;
+
+    let allowed = rhai_engine.eval::<bool>(expression.as_str()).unwrap();
+
+    let response = AdmissionResponse {
+        allowed,
+        patch: None,
+        status: None,
+        uid: admission_review.request.uid.clone(),
+        patch_type: None,
+        audit_annotations: None,
+        warnings: None,
+    };
 
     Ok(Json(AdmissionReviewResponse::new(response)))
 }

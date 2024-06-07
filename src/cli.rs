@@ -86,6 +86,12 @@ pub(crate) fn build_cli() -> Command {
                 .env("KUBEWARDEN_POLICIES")
                 .default_value("policies.yml")
                 .help("YAML file holding the policies to be loaded and their settings"),
+            Arg::new("groups")
+                .long("groups")
+                .value_name("GROUPS_FILE")
+                .env("KUBEWARDEN_GROUPS")
+                .default_value("groups.yml")
+                .help("YAML file holding the groups to be loaded"),
             Arg::new("policies-download-dir")
                 .long("policies-download-dir")
                 .value_name("POLICIES_DOWNLOAD_DIR")

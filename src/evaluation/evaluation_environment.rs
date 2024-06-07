@@ -226,6 +226,8 @@ impl EvaluationEnvironment {
 
     /// Perform a request validation
     pub fn validate(&self, policy_id: &str, req: &ValidateRequest) -> Result<AdmissionResponse> {
+        dbg!(format!("validate policy: {}", policy_id));
+
         if let Some(error) = self.policy_initialization_errors.get(policy_id) {
             return Err(EvaluationError::PolicyInitialization(error.to_string()));
         }

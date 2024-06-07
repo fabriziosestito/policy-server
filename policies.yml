@@ -1,6 +1,6 @@
-psp-apparmor:
+apparmor:
   url: registry://ghcr.io/kubewarden/policies/psp-apparmor:v0.1.7
-psp-capabilities:
+capabilities:
   url: registry://ghcr.io/kubewarden/policies/psp-capabilities:v0.1.7
   allowedToMutate: true
   settings:

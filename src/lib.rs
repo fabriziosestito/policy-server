@@ -15,6 +15,7 @@ pub mod tracing;
 
 use ::tracing::{debug, info, Level};
 use anyhow::{anyhow, Result};
+use api::handlers::validate_group_handler;
 use axum::{
     routing::{get, post},
     Router,
@@ -202,6 +203,8 @@ impl PolicyServer {
         let state = Arc::new(ApiServerState {
             semaphore: Semaphore::new(config.pool_size),
             evaluation_environment,
+            groups: config.groups,
+            policies: config.policies,
         });
 
         let tls_config = if let Some(tls_config) = config.tls_config {
@@ -215,6 +218,7 @@ impl PolicyServer {
         let mut router = Router::new()
             .route("/audit/:policy_id", post(audit_handler))
             .route("/validate/:policy_id", post(validate_handler))
+            .route("/validate_group/:group_id", post(validate_group_handler))
             .route("/validate_raw/:policy_id", post(validate_raw_handler))
             .with_state(state.clone())
             .layer(
