@@ -1,8 +1,17 @@
-apparmor:
-  url: registry://ghcr.io/kubewarden/policies/psp-apparmor:v0.1.7
-capabilities:
-  url: registry://ghcr.io/kubewarden/policies/psp-capabilities:v0.1.7
-  allowedToMutate: true
+cel:
+  url: registry://ghcr.io/fabriziosestito/policies/cel-policy:v1.0.0-rc2
   settings:
-    allowed_capabilities: ["*"]
-    required_drop_capabilities: ["KILL"]
+    validations:
+      - expression: "false"
+        messageExpression: "object.spec.containers.filter(c, !has(c.livenessProbe)).map(c, c.name).join()"
+  contextAwareResources:
+    - apiVersion: "v1"
+      kind: "Namespace"
+# apparmor:
+#   url: registry://ghcr.io/kubewarden/policies/psp-apparmor:v0.1.7
+# capabilities:
+#   url: registry://ghcr.io/kubewarden/policies/psp-capabilities:v0.1.7
+#   allowedToMutate: true
+#   settings:
+#     allowed_capabilities: ["*"]
+#     required_drop_capabilities: ["KILL"]

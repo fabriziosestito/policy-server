@@ -1,2 +1,5 @@
 tonino:
-  expression: "!apparmor() && capabilities()"
+  expression: "apparmor()"
+
+context-group:
+  expression: "all() && all()"

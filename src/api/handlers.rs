@@ -188,7 +188,10 @@ pub(crate) async fn validate_group_handler(
 
     let rhai_engine = rhai_engine;
 
-    let allowed = rhai_engine.eval::<bool>(expression.as_str()).unwrap();
+    let allowed =
+        task::spawn_blocking(move || rhai_engine.eval::<bool>(expression.as_str()).unwrap())
+            .await
+            .expect("task::spawn_blocking failed");
 
     let response = AdmissionResponse {
         allowed,
