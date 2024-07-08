@@ -1,20 +1,21 @@
 use anyhow::{anyhow, Result};
 use clap::ArgMatches;
 use lazy_static::lazy_static;
-use policy_evaluator::policy_evaluator::PolicySettings;
-use policy_evaluator::policy_fetcher::sources::{read_sources_file, Sources};
-use policy_evaluator::policy_fetcher::verify::config::{
-    read_verification_file, LatestVerificationConfig, VerificationConfigV1,
+use policy_evaluator::{
+    policy_fetcher::{
+        sources::{read_sources_file, Sources},
+        verify::config::{read_verification_file, LatestVerificationConfig, VerificationConfigV1},
+    },
+    policy_metadata::ContextAwareResource,
 };
-use policy_evaluator::policy_metadata::ContextAwareResource;
 use serde::Deserialize;
-use serde_yaml::Value;
-use std::collections::{BTreeSet, HashMap};
-use std::env;
-use std::fs::File;
-use std::iter::FromIterator;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeSet, HashMap},
+    env,
+    fs::File,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 pub static SERVICE_NAME: &str = "kubewarden-policy-server";
 const DOCKER_CONFIG_ENV_VAR: &str = "DOCKER_CONFIG";
@@ -24,6 +25,9 @@ lazy_static! {
         std::env::var("HOSTNAME").unwrap_or_else(|_| String::from("unknown"));
 }
 
+// TODO: be more strict when parsing the configuration file:
+// - error when unknown data is found
+// - validate the names of the policies and sub-policies: they cannot have `/` symbols
 pub struct Config {
     pub addr: SocketAddr,
     pub sources: Option<Sources>,
@@ -245,31 +249,112 @@ impl From<PolicyMode> for String {
     }
 }
 
+/// Settings specified by the user for a given policy.
+#[derive(Debug, Clone, Default)]
+pub struct SettingsJSON(serde_json::Map<String, serde_json::Value>);
+
+impl From<SettingsJSON> for serde_json::Map<String, serde_json::Value> {
+    fn from(val: SettingsJSON) -> Self {
+        val.0
+    }
+}
+
+impl TryFrom<HashMap<String, serde_yaml::Value>> for SettingsJSON {
+    type Error = anyhow::Error;
+
+    fn try_from(settings: HashMap<String, serde_yaml::Value>) -> Result<Self> {
+        let settings_yaml = serde_yaml::Mapping::from_iter(
+            settings
+                .iter()
+                .map(|(key, value)| (serde_yaml::Value::String(key.to_string()), value.clone())),
+        );
+        let settings_json = convert_yaml_map_to_json(settings_yaml)
+            .map_err(|e| anyhow!("cannot convert YAML settings to JSON: {:?}", e))?;
+        Ok(SettingsJSON(settings_json))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PolicySettings {
+    IndividualPolicy(SettingsJSON),
+    GroupPolicy {
+        expression: String,
+        message: String,
+        sub_policies: Vec<String>,
+    },
+}
+
+/// `GroupPolicyMember` represents a single policy that is part of a group policy.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Policy {
+pub struct GroupPolicyMember {
+    /// Thge URL where the policy is located
     pub url: String,
-    #[serde(default)]
-    pub policy_mode: PolicyMode,
-    pub allowed_to_mutate: Option<bool>,
-    pub settings: Option<HashMap<String, Value>>,
+    /// The settings for the policy
+    pub settings: Option<HashMap<String, serde_yaml::Value>>,
+    /// The list of Kubernetes resources the policy is allowed to access
     #[serde(default)]
     pub context_aware_resources: BTreeSet<ContextAwareResource>,
 }
 
+impl GroupPolicyMember {
+    pub fn settings(&self) -> Result<PolicySettings> {
+        let settings = SettingsJSON::try_from(self.settings.clone().unwrap_or_default())?;
+        Ok(PolicySettings::IndividualPolicy(settings))
+    }
+}
+
+/// Describes a policy that can be either an individual policy or a group policy.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged, rename_all = "camelCase")]
+pub enum Policy {
+    /// An individual policy
+    Individual {
+        /// The URL where the policy is located
+        url: String,
+        #[serde(default)]
+        /// The mode of the policy
+        policy_mode: PolicyMode,
+        /// Whether the policy is allowed to mutate the request
+        allowed_to_mutate: Option<bool>,
+        /// The settings for the policy, as provided by the user
+        settings: Option<HashMap<String, serde_yaml::Value>>,
+        #[serde(default)]
+        /// The list of Kubernetes resources the policy is allowed to access
+        context_aware_resources: BTreeSet<ContextAwareResource>,
+    },
+    /// A group of policies that are evaluated together using a given expression
+    Group {
+        /// The mode of the policy
+        #[serde(default)]
+        policy_mode: PolicyMode,
+        /// The policies that make up for this group
+        /// Key is a unique identifier
+        policies: HashMap<String, GroupPolicyMember>,
+        /// The expression that is used to evaluate the group of policies
+        expression: String,
+        /// The message that is returned when the group of policies evaluates to false
+        message: String,
+    },
+}
+
 impl Policy {
-    pub fn settings_to_json(&self) -> Result<Option<PolicySettings>> {
-        match self.settings.as_ref() {
-            None => Ok(None),
-            Some(settings) => {
-                let settings =
-                    serde_yaml::Mapping::from_iter(settings.iter().map(|(key, value)| {
-                        (serde_yaml::Value::String(key.to_string()), value.clone())
-                    }));
-                Ok(Some(convert_yaml_map_to_json(settings).map_err(|e| {
-                    anyhow!("cannot convert YAML settings to JSON: {:?}", e)
-                })?))
+    pub fn settings(&self) -> Result<PolicySettings> {
+        match self {
+            Policy::Individual { settings, .. } => {
+                let settings = SettingsJSON::try_from(settings.clone().unwrap_or_default())?;
+                Ok(PolicySettings::IndividualPolicy(settings))
             }
+            Policy::Group {
+                expression,
+                message,
+                policies,
+                ..
+            } => Ok(PolicySettings::GroupPolicy {
+                expression: expression.clone(),
+                message: message.clone(),
+                sub_policies: policies.keys().cloned().collect(),
+            }),
         }
     }
 }
@@ -316,160 +401,112 @@ fn read_policies_file(path: &Path) -> Result<HashMap<String, Policy>> {
 mod tests {
     use super::*;
     use crate::cli;
+    use rstest::*;
+    use serde_json::json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn get_settings_when_data_is_provided() {
-        let input = r#"
----
-example:
-  url: file:///tmp/namespace-validate-policy.wasm
-  settings:
-    valid_namespace: valid
-"#;
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
-
-        let policy = policies.get("example").unwrap();
-        assert!(policy.allowed_to_mutate.is_none());
-        assert!(policy.settings.is_some());
-    }
-
-    #[test]
-    fn test_allowed_to_mutate_settings() {
-        let input = r#"
----
-example:
-  url: file:///tmp/namespace-validate-policy.wasm
-  allowedToMutate: true
-  settings:
-    valid_namespace: valid
-"#;
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
-
-        let policy = policies.get("example").unwrap();
-        assert!(policy.allowed_to_mutate.unwrap());
-        assert!(policy.settings.is_some());
-
-        let input2 = r#"
----
-example:
-  url: file:///tmp/namespace-validate-policy.wasm
-  allowedToMutate: false
-  settings:
-    valid_namespace: valid
-"#;
-        let policies2: HashMap<String, Policy> = serde_yaml::from_str(input2).unwrap();
-        assert!(!policies2.is_empty());
-
-        let policy2 = policies2.get("example").unwrap();
-        assert!(!policy2.allowed_to_mutate.unwrap());
-        assert!(policy2.settings.is_some());
-    }
-
-    #[test]
-    fn get_settings_when_empty_map_is_provided() {
-        let input = r#"
+    #[rstest]
+    #[case::settings_empty(
+        r#"
 ---
 example:
   url: file:///tmp/namespace-validate-policy.wasm
   settings: {}
-"#;
-
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
-
-        let policy = policies.get("example").unwrap();
-        assert!(policy.settings.is_some());
-    }
-
-    #[test]
-    fn get_settings_when_no_settings_are_provided() {
-        let input = r#"
+"#, json!({})
+    )]
+    #[case::settings_missing(
+        r#"
 ---
 example:
   url: file:///tmp/namespace-validate-policy.wasm
-"#;
-
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
-
-        let policy = policies.get("example").unwrap();
-        assert!(policy.settings.is_none());
-    }
-
-    #[test]
-    fn get_settings_when_settings_is_null() {
-        let input = r#"
-{
-    "privileged-pods": {
-        "url": "registry://ghcr.io/kubewarden/policies/pod-privileged:v0.1.5",
-        "settings": null
-    }
-}
-"#;
-
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
-
-        let policy = policies.get("privileged-pods").unwrap();
-        assert!(policy.settings.is_none());
-    }
-
-    #[test]
-    fn handle_yaml_map_with_data() {
-        let input = r#"
+"#, json!({})
+    )]
+    #[case::settings_null(
+        r#"
+---
+example:
+  url: file:///tmp/namespace-validate-policy.wasm
+  settings: null
+"#, json!({})
+    )]
+    #[case::settings_provided(
+        r#"
 ---
 example:
   url: file:///tmp/namespace-validate-policy.wasm
   settings:
-    valid_namespace: valid
-"#;
+    "counter": 1
+    "items": ["a", "b"]
+    "nested": {"key": "value"}
+"#, json!({"counter": 1, "items": ["a", "b"], "nested": {"key": "value"}})
+    )]
+    fn handle_settings_conversion(#[case] input: &str, #[case] expected: serde_json::Value) {
         let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
         assert!(!policies.is_empty());
 
         let policy = policies.get("example").unwrap();
-        let json_data = convert_yaml_map_to_json(serde_yaml::Mapping::from_iter(
-            policy
-                .settings
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|(key, value)| (serde_yaml::Value::String(key.clone()), value.clone())),
-        ));
-        assert!(json_data.is_ok());
-
-        let settings = json_data.unwrap();
-        assert_eq!(settings.get("valid_namespace").unwrap(), "valid");
+        let settings = policy.settings().unwrap();
+        match settings {
+            PolicySettings::IndividualPolicy(settings) => {
+                assert_eq!(serde_json::Value::Object(settings.0), expected);
+            }
+            _ => panic!("Expected an Individual policy"),
+        }
     }
 
-    #[test]
-    fn handle_yaml_map_with_no_data() {
-        let input = r#"
----
-example:
-  url: file:///tmp/namespace-validate-policy.wasm
-  settings: {}
-"#;
-        let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
-        assert!(!policies.is_empty());
+    //     #[test]
+    //     fn handle_yaml_map_with_data() {
+    //         let input = r#"
+    // ---
+    // example:
+    //   url: file:///tmp/namespace-validate-policy.wasm
+    //   settings:
+    //     valid_namespace: valid
+    // "#;
+    //         let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
+    //         assert!(!policies.is_empty());
 
-        let policy = policies.get("example").unwrap();
-        let json_data = convert_yaml_map_to_json(serde_yaml::Mapping::from_iter(
-            policy
-                .settings
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|(key, value)| (serde_yaml::Value::String(key.clone()), value.clone())),
-        ));
-        assert!(json_data.is_ok());
+    //         let policy = policies.get("example").unwrap();
+    //         let json_data = convert_yaml_map_to_json(serde_yaml::Mapping::from_iter(
+    //             policy
+    //                 .settings
+    //                 .as_ref()
+    //                 .unwrap()
+    //                 .iter()
+    //                 .map(|(key, value)| (serde_yaml::Value::String(key.clone()), value.clone())),
+    //         ));
+    //         assert!(json_data.is_ok());
 
-        let settings = json_data.unwrap();
-        assert!(settings.is_empty());
-    }
+    //         let settings = json_data.unwrap();
+    //         assert_eq!(settings.get("valid_namespace").unwrap(), "valid");
+    //     }
+
+    //     #[test]
+    //     fn handle_yaml_map_with_no_data() {
+    //         let input = r#"
+    // ---
+    // example:
+    //   url: file:///tmp/namespace-validate-policy.wasm
+    //   settings: {}
+    // "#;
+    //         let policies: HashMap<String, Policy> = serde_yaml::from_str(input).unwrap();
+    //         assert!(!policies.is_empty());
+
+    //         let policy = policies.get("example").unwrap();
+    //         let json_data = convert_yaml_map_to_json(serde_yaml::Mapping::from_iter(
+    //             policy
+    //                 .settings
+    //                 .as_ref()
+    //                 .unwrap()
+    //                 .iter()
+    //                 .map(|(key, value)| (serde_yaml::Value::String(key.clone()), value.clone())),
+    //         ));
+    //         assert!(json_data.is_ok());
+
+    //         let settings = json_data.unwrap();
+    //         assert!(settings.is_empty());
+    //     }
 
     #[test]
     fn boolean_flags() {

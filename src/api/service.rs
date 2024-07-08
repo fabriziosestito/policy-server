@@ -1,15 +1,14 @@
-use std::fmt;
-
 use policy_evaluator::{
     admission_response::{AdmissionResponse, AdmissionResponseStatus},
     policy_evaluator::ValidateRequest,
 };
+use std::fmt;
 use tokio::time::Instant;
 use tracing::info;
 
 use crate::{
     config::PolicyMode,
-    evaluation::{errors::EvaluationError, EvaluationEnvironment},
+    evaluation::{errors::EvaluationError, Validator},
     metrics,
 };
 
@@ -28,7 +27,7 @@ impl fmt::Display for RequestOrigin {
 }
 
 pub(crate) fn evaluate(
-    evaluation_environment: &EvaluationEnvironment,
+    validator: &Validator,
     policy_id: &str,
     validate_request: &ValidateRequest,
     request_origin: RequestOrigin,
@@ -36,29 +35,28 @@ pub(crate) fn evaluate(
     let start_time = Instant::now();
 
     let policy_name = policy_id.to_owned();
-    let vanilla_validation_response =
-        match evaluation_environment.validate(policy_id, validate_request) {
-            Ok(validation_response) => validation_response,
-            Err(EvaluationError::PolicyInitialization(error)) => {
-                let policy_initialization_error_metric = metrics::PolicyInitializationError {
-                    policy_name: policy_id.to_string(),
-                    initialization_error: error.to_string(),
-                };
+    let vanilla_validation_response = match validator.validate(policy_id, validate_request) {
+        Ok(validation_response) => validation_response,
+        Err(EvaluationError::PolicyInitialization(error)) => {
+            let policy_initialization_error_metric = metrics::PolicyInitializationError {
+                policy_name: policy_id.to_string(),
+                initialization_error: error.to_string(),
+            };
 
-                metrics::add_policy_evaluation(&policy_initialization_error_metric);
+            metrics::add_policy_evaluation(&policy_initialization_error_metric);
 
-                return Ok(AdmissionResponse::reject(
-                    validate_request.uid().to_owned(),
-                    error.to_string(),
-                    500,
-                ));
-            }
+            return Ok(AdmissionResponse::reject(
+                validate_request.uid().to_owned(),
+                error.to_string(),
+                500,
+            ));
+        }
 
-            Err(error) => return Err(error),
-        };
+        Err(error) => return Err(error),
+    };
 
-    let policy_mode = evaluation_environment.get_policy_mode(policy_id)?;
-    let allowed_to_mutate = evaluation_environment.get_policy_allowed_to_mutate(policy_id)?;
+    let policy_mode = validator.get_policy_mode(policy_id)?;
+    let allowed_to_mutate = validator.get_policy_allowed_to_mutate(policy_id)?;
 
     let policy_evaluation_duration = start_time.elapsed();
     let accepted = vanilla_validation_response.allowed;
@@ -87,9 +85,7 @@ pub(crate) fn evaluate(
             // Moreover, I (flavio) don't like the fact we're using a mutable variable for
             // `validation_response`
             if let Some(ref req_namespace) = adm_req.namespace {
-                if evaluation_environment
-                    .should_always_accept_requests_made_inside_of_namespace(req_namespace)
-                {
+                if validator.should_always_accept_requests_made_inside_of_namespace(req_namespace) {
                     // given namespace, just set the `allowed`
                     // part of the response to `true` if the
                     // request matches this namespace. Keep
@@ -202,11 +198,9 @@ mod tests {
 
     const POLICY_ID: &str = "policy-id";
 
-    fn create_evaluation_environment_that_accepts_request(
-        policy_mode: PolicyMode,
-    ) -> EvaluationEnvironment {
-        let mut mock_evaluation_environment = EvaluationEnvironment::default();
-        mock_evaluation_environment
+    fn create_validator_that_accepts_request(policy_mode: PolicyMode) -> Validator {
+        let mut mock_validator = Validator::default();
+        mock_validator
             .expect_validate()
             .returning(|_policy_id, request| {
                 Ok(AdmissionResponse {
@@ -215,32 +209,32 @@ mod tests {
                     ..Default::default()
                 })
             });
-        mock_evaluation_environment
+        mock_validator
             .expect_get_policy_mode()
             .returning(move |_policy_id| Ok(policy_mode.clone()));
-        mock_evaluation_environment
+        mock_validator
             .expect_get_policy_allowed_to_mutate()
             .returning(|_policy_id| Ok(false));
-        mock_evaluation_environment
+        mock_validator
             .expect_should_always_accept_requests_made_inside_of_namespace()
             .returning(|_namespace| false);
 
-        mock_evaluation_environment
+        mock_validator
     }
 
     #[derive(Clone)]
-    struct EvaluationEnvironmentRejectionDetails {
+    struct ValidatorRejectionDetails {
         message: String,
         code: u16,
     }
 
-    fn create_evaluation_environment_that_reject_request(
+    fn create_validator_that_reject_request(
         policy_mode: PolicyMode,
-        rejection_details: EvaluationEnvironmentRejectionDetails,
+        rejection_details: ValidatorRejectionDetails,
         allowed_namespace: String,
-    ) -> EvaluationEnvironment {
-        let mut mock_evaluation_environment = EvaluationEnvironment::default();
-        mock_evaluation_environment
+    ) -> Validator {
+        let mut mock_validator = Validator::default();
+        mock_validator
             .expect_validate()
             .returning(move |_policy_id, request| {
                 Ok(AdmissionResponse::reject(
@@ -249,17 +243,17 @@ mod tests {
                     rejection_details.code,
                 ))
             });
-        mock_evaluation_environment
+        mock_validator
             .expect_get_policy_mode()
             .returning(move |_policy_id| Ok(policy_mode.clone()));
-        mock_evaluation_environment
+        mock_validator
             .expect_get_policy_allowed_to_mutate()
             .returning(|_policy_id| Ok(false));
-        mock_evaluation_environment
+        mock_validator
             .expect_should_always_accept_requests_made_inside_of_namespace()
             .returning(move |namespace| namespace == allowed_namespace);
 
-        mock_evaluation_environment
+        mock_validator
     }
 
     #[test]
@@ -549,8 +543,7 @@ mod tests {
         #[case] policy_mode: PolicyMode,
         #[case] request_origin: RequestOrigin,
     ) {
-        let evaluation_environment =
-            create_evaluation_environment_that_accepts_request(policy_mode);
+        let evaluation_environment = create_validator_that_accepts_request(policy_mode);
         let policy_id = "test_policy1";
         let validate_request =
             ValidateRequest::AdmissionRequest(build_admission_review_request().request);
@@ -576,11 +569,11 @@ mod tests {
         #[case] request_origin: RequestOrigin,
         #[case] accept: bool,
     ) {
-        let rejection_details = EvaluationEnvironmentRejectionDetails {
+        let rejection_details = ValidatorRejectionDetails {
             message: "boom".to_string(),
             code: 500,
         };
-        let evaluation_environment = create_evaluation_environment_that_reject_request(
+        let evaluation_environment = create_validator_that_reject_request(
             policy_mode,
             rejection_details.clone(),
             "".to_string(),
@@ -610,8 +603,7 @@ mod tests {
 
     #[test]
     fn evaluate_policy_evaluator_accepts_request_raw() {
-        let evaluation_environment =
-            create_evaluation_environment_that_accepts_request(PolicyMode::Protect);
+        let evaluation_environment = create_validator_that_accepts_request(PolicyMode::Protect);
         let request = serde_json::json!(r#"{"foo": "bar"}"#);
         let validate_request = ValidateRequest::Raw(request.clone());
         let policy_id = "test_policy1";
@@ -629,11 +621,11 @@ mod tests {
 
     #[test]
     fn evaluate_policy_evaluator_rejects_request_raw() {
-        let rejection_details = EvaluationEnvironmentRejectionDetails {
+        let rejection_details = ValidatorRejectionDetails {
             message: "boom".to_string(),
             code: 500,
         };
-        let evaluation_environment = create_evaluation_environment_that_reject_request(
+        let evaluation_environment = create_validator_that_reject_request(
             PolicyMode::Protect,
             rejection_details.clone(),
             "".to_string(),
@@ -664,11 +656,11 @@ mod tests {
         #[case] request_origin: RequestOrigin,
     ) {
         let allowed_namespace = "kubewarden_special".to_string();
-        let rejection_details = EvaluationEnvironmentRejectionDetails {
+        let rejection_details = ValidatorRejectionDetails {
             message: "boom".to_string(),
             code: 500,
         };
-        let evaluation_environment = create_evaluation_environment_that_reject_request(
+        let evaluation_environment = create_validator_that_reject_request(
             PolicyMode::Protect,
             rejection_details.clone(),
             allowed_namespace.clone(),

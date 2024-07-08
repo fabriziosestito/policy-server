@@ -56,6 +56,39 @@ async fn test_validate() {
 }
 
 #[tokio::test]
+async fn test_validate_group_policy() {
+    let config = default_test_config();
+    let app = app(config).await;
+
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .header(header::CONTENT_TYPE, "application/json")
+        .uri("/validate/group-policy-just-pod-privileged")
+        .body(Body::from(include_str!(
+            "data/pod_with_privileged_containers.json"
+        )))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), 200);
+
+    let admission_review_response: AdmissionReviewResponse =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+
+    assert!(!admission_review_response.response.allowed);
+    assert_eq!(
+        admission_review_response.response.status,
+        Some(
+            policy_evaluator::admission_response::AdmissionResponseStatus {
+                message: Some("The group policy rejected your request".to_owned()),
+                code: None
+            }
+        )
+    )
+}
+
+#[tokio::test]
 async fn test_validate_policy_not_found() {
     let config = default_test_config();
     let app = app(config).await;
@@ -117,6 +150,38 @@ async fn test_validate_raw() {
         Some("JSONPatch".to_owned()),
         admission_review_response.response.patch_type
     );
+}
+
+#[tokio::test]
+async fn test_validate_group_policy_does_not_do_mutation() {
+    let config = default_test_config();
+    let app = app(config).await;
+
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .header(header::CONTENT_TYPE, "application/json")
+        .uri("/validate_raw/group-policy-just-raw-mutation")
+        .body(Body::from(include_str!("data/raw_review.json")))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), 200);
+
+    let admission_review_response: AdmissionReviewResponse =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+
+    assert!(!admission_review_response.response.allowed);
+    assert_eq!(
+        admission_review_response.response.status,
+        Some(
+            policy_evaluator::admission_response::AdmissionResponseStatus {
+                message: Some("The group policy rejected your request".to_owned()),
+                code: None
+            }
+        )
+    );
+    assert!(admission_review_response.response.patch.is_none());
 }
 
 #[tokio::test]
@@ -305,7 +370,7 @@ async fn test_verified_policy() {
     let mut config = default_test_config();
     config.policies = HashMap::from([(
         "pod-privileged".to_owned(),
-        Policy {
+        Policy::Individual {
             url: "ghcr.io/kubewarden/tests/pod-privileged:v0.2.1".to_owned(),
             policy_mode: PolicyMode::Protect,
             allowed_to_mutate: None,
@@ -335,7 +400,7 @@ async fn test_policy_with_invalid_settings() {
     let mut config = default_test_config();
     config.policies.insert(
         "invalid_settings".to_owned(),
-        Policy {
+        Policy::Individual {
             url: "ghcr.io/kubewarden/tests/sleeping-policy:v0.1.0".to_owned(),
             policy_mode: PolicyMode::Protect,
             allowed_to_mutate: None,
@@ -381,7 +446,7 @@ async fn test_policy_with_wrong_url() {
     let mut config = default_test_config();
     config.policies.insert(
         "wrong_url".to_owned(),
-        Policy {
+        Policy::Individual {
             url: "ghcr.io/kubewarden/tests/not_existing:v0.1.0".to_owned(),
             policy_mode: PolicyMode::Protect,
             allowed_to_mutate: None,

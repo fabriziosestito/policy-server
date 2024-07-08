@@ -16,6 +16,6 @@ pub enum EvaluationError {
     #[error("WebAssembly failure: {0}")]
     WebAssemblyError(String),
 
-    #[error("{0}")]
-    InternalError(String),
+    #[error("Group policy used as individual policy: {0}")]
+    GroupPolicyUsedAsIndividualPolicy(String),
 }

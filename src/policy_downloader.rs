@@ -56,6 +56,7 @@ impl Downloader {
         destination: impl AsRef<Path>,
         verification_config: Option<&LatestVerificationConfig>,
     ) -> FetchedPolicies {
+        let policies = policies_to_download(policies);
         let policies_total = policies.len();
         info!(
             download_dir = destination
@@ -84,9 +85,9 @@ impl Downloader {
         // This can be a subset of `processed_policies`
         let mut fetched_policies: FetchedPolicies = HashMap::new();
 
-        for (name, policy) in policies.iter() {
+        for (name, policy_url) in policies.iter() {
             debug!(policy = name.as_str(), "download");
-            if !processed_policies.insert(policy.url.as_str()) {
+            if !processed_policies.insert(policy_url) {
                 debug!(
                     policy = name.as_str(),
                     "skipping, wasm module alredy processed"
@@ -102,13 +103,12 @@ impl Downloader {
                     policy = name.as_str(),
                     "verifying policy authenticity and integrity using sigstore"
                 );
-                verified_manifest_digest = match ver.verify(&policy.url, verification_config).await
-                {
+                verified_manifest_digest = match ver.verify(policy_url, verification_config).await {
                     Ok(d) => Some(d),
                     Err(e) => {
                         error!(policy = name.as_str(), error =?e, "policy cannot be verified");
                         fetched_policies.insert(
-                            policy.url.clone(),
+                            policy_url.to_owned(),
                             Err(anyhow!("Policy '{}' cannot be verified: {}", name, e)),
                         );
 
@@ -127,7 +127,7 @@ impl Downloader {
             }
 
             let fetched_policy = match policy_fetcher::fetch_policy(
-                &policy.url,
+                policy_url,
                 policy_fetcher::PullDestination::Store(destination.as_ref().to_path_buf()),
                 self.sources.as_ref(),
             )
@@ -141,11 +141,11 @@ impl Downloader {
                         "policy download failed"
                     );
                     fetched_policies.insert(
-                        policy.url.clone(),
+                        policy_url.to_owned(),
                         Err(anyhow!(
                             "Error while downloading policy '{}' from {}: {}",
                             name,
-                            policy.url,
+                            policy_url,
                             e
                         )),
                     );
@@ -169,7 +169,7 @@ impl Downloader {
                     );
 
                     fetched_policies.insert(
-                        policy.url.clone(),
+                        policy_url.to_owned(),
                         Err(anyhow!("Verification of policy {} failed: {}", name, e)),
                     );
                     continue;
@@ -209,7 +209,7 @@ impl Downloader {
                 );
             }
 
-            fetched_policies.insert(policy.url.clone(), Ok(fetched_policy.local_path));
+            fetched_policies.insert(policy_url.to_owned(), Ok(fetched_policy.local_path));
         }
 
         fetched_policies
@@ -225,6 +225,32 @@ async fn create_verifier(
     let verifier = Verifier::new(sources, Some(manual_root)).await?;
 
     Ok(verifier)
+}
+
+/// Group policies need to be flattened into a single list of policies to download
+///
+/// Return a map with the name of the policy as key, and the its download url as value.
+/// Sub-policies are named as `group_name/sub_policy_name`
+fn policies_to_download(policies: &HashMap<String, Policy>) -> HashMap<String, String> {
+    let mut flattened_policies: HashMap<String, String> = HashMap::new();
+
+    for (name, policy) in policies {
+        match policy {
+            Policy::Individual { url, .. } => {
+                flattened_policies.insert(name.to_owned(), url.to_owned());
+            }
+            Policy::Group { policies, .. } => {
+                for (sub_policy_name, sub_policy) in policies {
+                    flattened_policies.insert(
+                        format!("{name}/#{sub_policy_name}"),
+                        sub_policy.url.to_owned(),
+                    );
+                }
+            }
+        }
+    }
+
+    flattened_policies
 }
 
 #[cfg(test)]

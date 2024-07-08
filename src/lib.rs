@@ -45,7 +45,7 @@ use crate::api::handlers::{
 use crate::api::state::ApiServerState;
 use crate::evaluation::{
     precompiled_policy::{PrecompiledPolicies, PrecompiledPolicy},
-    EvaluationEnvironment,
+    Validator,
 };
 use crate::policy_downloader::{Downloader, FetchedPolicies};
 use config::Config;
@@ -155,7 +155,7 @@ impl PolicyServer {
             }
         }
 
-        let evaluation_environment = EvaluationEnvironment::new(
+        let validator = Validator::new(
             &engine,
             &config.policies,
             &precompiled_policies,
@@ -185,7 +185,7 @@ impl PolicyServer {
 
         let state = Arc::new(ApiServerState {
             semaphore: Semaphore::new(config.pool_size),
-            evaluation_environment,
+            validator,
         });
 
         let tls_config = if let Some(tls_config) = config.tls_config {

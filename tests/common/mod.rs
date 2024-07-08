@@ -1,6 +1,6 @@
 use axum::Router;
 use policy_server::{
-    config::{Config, Policy, PolicyMode},
+    config::{Config, GroupPolicyMember, Policy, PolicyMode},
     PolicyServer,
 };
 use std::{
@@ -13,7 +13,7 @@ pub(crate) fn default_test_config() -> Config {
     let policies = HashMap::from([
         (
             "pod-privileged".to_owned(),
-            Policy {
+            Policy::Individual {
                 url: "ghcr.io/kubewarden/tests/pod-privileged:v0.2.1".to_owned(),
                 policy_mode: PolicyMode::Protect,
                 allowed_to_mutate: None,
@@ -23,7 +23,7 @@ pub(crate) fn default_test_config() -> Config {
         ),
         (
             "raw-mutation".to_owned(),
-            Policy {
+            Policy::Individual {
                 url: "ghcr.io/kubewarden/tests/raw-mutation-policy:v0.1.0".to_owned(),
                 policy_mode: PolicyMode::Protect,
                 allowed_to_mutate: Some(true),
@@ -39,12 +39,50 @@ pub(crate) fn default_test_config() -> Config {
         ),
         (
             "sleep".to_owned(),
-            Policy {
+            Policy::Individual {
                 url: "ghcr.io/kubewarden/tests/sleeping-policy:v0.1.0".to_owned(),
                 policy_mode: PolicyMode::Protect,
                 allowed_to_mutate: None,
                 settings: Some(HashMap::from([("sleepMilliseconds".to_owned(), 2.into())])),
                 context_aware_resources: BTreeSet::new(),
+            },
+        ),
+        (
+            "group-policy-just-pod-privileged".to_owned(),
+            Policy::Group {
+                expression: "pod_privileged() && true".to_string(),
+                message: "The group policy rejected your request".to_string(),
+                policy_mode: PolicyMode::Protect,
+                policies: HashMap::from([(
+                    "pod_privileged".to_string(),
+                    GroupPolicyMember {
+                        url: "ghcr.io/kubewarden/tests/pod-privileged:v0.2.1".to_owned(),
+                        settings: None,
+                        context_aware_resources: BTreeSet::new(),
+                    },
+                )]),
+            },
+        ),
+        (
+            "group-policy-just-raw-mutation".to_owned(),
+            Policy::Group {
+                expression: "raw_mutation() && true".to_string(),
+                message: "The group policy rejected your request".to_string(),
+                policy_mode: PolicyMode::Protect,
+                policies: HashMap::from([(
+                    "raw_mutation".to_string(),
+                    GroupPolicyMember {
+                        url: "ghcr.io/kubewarden/tests/raw-mutation-policy:v0.1.0".to_owned(),
+                        settings: Some(HashMap::from([
+                            (
+                                "forbiddenResources".to_owned(),
+                                vec!["banana", "carrot"].into(),
+                            ),
+                            ("defaultResource".to_owned(), "hay".into()),
+                        ])),
+                        context_aware_resources: BTreeSet::new(),
+                    },
+                )]),
             },
         ),
     ]);

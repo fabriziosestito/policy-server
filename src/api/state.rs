@@ -1,8 +1,8 @@
 use tokio::sync::Semaphore;
 
-use crate::evaluation::EvaluationEnvironment;
+use crate::evaluation::Validator;
 
 pub(crate) struct ApiServerState {
     pub(crate) semaphore: Semaphore,
-    pub(crate) evaluation_environment: EvaluationEnvironment,
+    pub(crate) validator: Validator,
 }
