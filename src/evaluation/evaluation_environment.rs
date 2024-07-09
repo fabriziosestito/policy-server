@@ -27,98 +27,6 @@ use crate::{
 #[cfg(test)]
 use mockall::automock;
 
-/// `Validator` is the main structure that is used to validate the requests.
-/// It was created because of the group policies feature. Due to Rust borrowing rules,
-/// and how Rhai works, it is not possible to have a single `EvaluationEnvironment` shared across
-/// all the threads. The `EvaluationEnvironment` had to be put inside of a `std::sync::Arc` to
-/// be shared across threads.
-///
-/// `Validator` holds the `Arc` reference to the `EvaluationEnvironment` and is the struct that
-/// gets mocked during the tests.
-#[derive(Default)]
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) struct Validator {
-    /// The name of the Namespace where Policy Server doesn't operate. All the requests
-    /// involving this Namespace are going to be accepted. This is usually done to prevent user
-    /// policies from messing with the components of the Kubewarden stack (which are all
-    /// deployed inside of the same Namespace).
-    always_accept_admission_reviews_on_namespace: Option<String>,
-
-    /// The `EvaluationEnvironment` doing the actual work. It is wrapped inside of an
-    /// `Arc` to be shared across threads.
-    evaluation_environment: Arc<EvaluationEnvironment>,
-}
-
-#[cfg_attr(test, automock)]
-#[cfg_attr(test, allow(dead_code))]
-impl Validator {
-    /// Creates a new `Validator`
-    pub(crate) fn new(
-        engine: &wasmtime::Engine,
-        policies: &HashMap<String, Policy>,
-        precompiled_policies: &PrecompiledPolicies,
-        always_accept_admission_reviews_on_namespace: Option<String>,
-        policy_evaluation_limit_seconds: Option<u64>,
-        callback_handler_tx: mpsc::Sender<CallbackRequest>,
-        continue_on_errors: bool,
-    ) -> Result<Self> {
-        let evaluation_environment = EvaluationEnvironment::new(
-            engine,
-            policies,
-            precompiled_policies,
-            policy_evaluation_limit_seconds,
-            callback_handler_tx,
-            continue_on_errors,
-        )?;
-
-        Ok(Self {
-            always_accept_admission_reviews_on_namespace,
-            evaluation_environment: Arc::new(evaluation_environment),
-        })
-    }
-
-    /// Returns `true` if the given `namespace` is the special Namespace that is ignored by all
-    /// the policies
-    pub(crate) fn should_always_accept_requests_made_inside_of_namespace(
-        &self,
-        namespace: &str,
-    ) -> bool {
-        self.always_accept_admission_reviews_on_namespace.as_deref() == Some(namespace)
-    }
-
-    /// Given a policy ID, return how the policy operates
-    pub fn get_policy_mode(&self, policy_id: &str) -> Result<PolicyMode> {
-        self.evaluation_environment.get_policy_mode(policy_id)
-    }
-
-    /// Given a policy ID, returns true if the policy is allowed to mutate
-    pub fn get_policy_allowed_to_mutate(&self, policy_id: &str) -> Result<bool> {
-        self.evaluation_environment
-            .get_policy_allowed_to_mutate(policy_id)
-    }
-
-    /// Perform a request validation
-    pub fn validate(&self, policy_id: &str, req: &ValidateRequest) -> Result<AdmissionResponse> {
-        if self
-            .evaluation_environment
-            .group_policies
-            .contains(policy_id)
-        {
-            EvaluationEnvironment::validate_group_policy(
-                self.evaluation_environment.clone(),
-                policy_id,
-                req,
-            )
-        } else {
-            EvaluationEnvironment::validate_individual_policy(
-                self.evaluation_environment.clone(),
-                policy_id,
-                req,
-            )
-        }
-    }
-}
-
 /// This structure contains all the policies defined by the user inside of the `policies.yml`.
 /// It also provides helper methods to perform the validation of a request and the validation
 /// of the settings provided by the user.
@@ -137,6 +45,12 @@ impl Validator {
 /// only once, during the bootstrap phase.
 #[derive(Default)]
 pub(crate) struct EvaluationEnvironment {
+    /// The name of the Namespace where Policy Server doesn't operate. All the requests
+    /// involving this Namespace are going to be accepted. This is usually done to prevent user
+    /// policies from messing with the components of the Kubewarden stack (which are all
+    /// deployed inside of the same Namespace).
+    always_accept_admission_reviews_on_namespace: Option<String>,
+
     /// A map with the module digest as key, and the associated `PolicyEvaluatorPre`
     /// as value
     module_digest_to_policy_evaluator_pre: HashMap<String, PolicyEvaluatorPre>,
@@ -165,17 +79,21 @@ pub(crate) struct EvaluationEnvironment {
     group_policies: HashSet<String>,
 }
 
+#[cfg_attr(test, automock)]
+#[cfg_attr(test, allow(dead_code))]
 impl EvaluationEnvironment {
     /// Creates a new `EvaluationEnvironment`
-    fn new(
+    pub(crate) fn new(
         engine: &wasmtime::Engine,
         policies: &HashMap<String, Policy>,
         precompiled_policies: &PrecompiledPolicies,
+        always_accept_admission_reviews_on_namespace: Option<String>,
         policy_evaluation_limit_seconds: Option<u64>,
         callback_handler_tx: mpsc::Sender<CallbackRequest>,
         continue_on_errors: bool,
     ) -> Result<Self> {
         let mut eval_env = Self {
+            always_accept_admission_reviews_on_namespace,
             ..Default::default()
         };
 
@@ -297,7 +215,14 @@ impl EvaluationEnvironment {
 
         Ok(eval_env)
     }
-
+    /// Returns `true` if the given `namespace` is the special Namespace that is ignored by all
+    /// the policies
+    pub(crate) fn should_always_accept_requests_made_inside_of_namespace(
+        &self,
+        namespace: &str,
+    ) -> bool {
+        self.always_accept_admission_reviews_on_namespace.as_deref() == Some(namespace)
+    }
     /// Register a new policy. It takes care of creating a new `PolicyEvaluator` (when needed).
     /// This is used to register both individual policies and the ones that are part of a group
     /// policy.
@@ -371,7 +296,7 @@ impl EvaluationEnvironment {
     }
 
     /// Given a policy ID, return how the policy operates
-    fn get_policy_mode(&self, policy_id: &str) -> Result<PolicyMode> {
+    pub(crate) fn get_policy_mode(&self, policy_id: &str) -> Result<PolicyMode> {
         self.policy_id_to_settings
             .get(policy_id)
             .map(|settings| settings.policy_mode.clone())
@@ -379,7 +304,7 @@ impl EvaluationEnvironment {
     }
 
     /// Given a policy ID, returns true if the policy is allowed to mutate
-    fn get_policy_allowed_to_mutate(&self, policy_id: &str) -> Result<bool> {
+    pub(crate) fn get_policy_allowed_to_mutate(&self, policy_id: &str) -> Result<bool> {
         self.policy_id_to_settings
             .get(policy_id)
             .map(|settings| settings.allowed_to_mutate)
@@ -475,39 +400,52 @@ impl EvaluationEnvironment {
         })
     }
 
+    /// Perform a request validation
+    pub fn validate(
+        self: Arc<Self>,
+        policy_id: &str,
+        req: &ValidateRequest,
+    ) -> Result<AdmissionResponse> {
+        if self.group_policies.contains(policy_id) {
+            self.validate_group_policy(policy_id, req)
+        } else {
+            self.validate_individual_policy(policy_id, req)
+        }
+    }
+
     /// Validate a single policy.
     ///
     /// Note, this is a static method because it is invoked from within a closure that is
     /// passed to the Rhai engine. That requires the `evaluation_environment` to be cloned,
     /// hence to be placed inside of an `Arc`.
     fn validate_individual_policy(
-        eval_env: Arc<EvaluationEnvironment>,
+        self: Arc<Self>,
         policy_id: &str,
         req: &ValidateRequest,
     ) -> Result<AdmissionResponse> {
         debug!(?policy_id, "validate individual policy");
 
-        if let Some(error) = eval_env.policy_initialization_errors.get(policy_id) {
+        if let Some(error) = self.policy_initialization_errors.get(policy_id) {
             return Err(EvaluationError::PolicyInitialization(error.to_string()));
         }
 
         let settings: serde_json::Map<String, serde_json::Value> =
-            match eval_env.get_policy_settings(policy_id)?.settings {
+            match self.get_policy_settings(policy_id)?.settings {
                 PolicySettings::IndividualPolicy(settings) => settings.into(),
                 _ => unreachable!(),
             };
-        let mut evaluator = eval_env.rehydrate(policy_id)?;
+        let mut evaluator = self.rehydrate(policy_id)?;
 
         Ok(evaluator.validate(req.clone(), &settings))
     }
 
     fn validate_group_policy(
-        eval_env: Arc<EvaluationEnvironment>,
+        self: Arc<Self>,
         policy_id: &str,
         req: &ValidateRequest,
     ) -> Result<AdmissionResponse> {
         let (expression, message, sub_policy_names) =
-            match eval_env.get_policy_settings(policy_id)?.settings {
+            match self.get_policy_settings(policy_id)?.settings {
                 PolicySettings::GroupPolicy {
                     expression,
                     message,
@@ -523,7 +461,7 @@ impl EvaluationEnvironment {
 
         for sub_policy_name in sub_policy_names {
             let sub_policy_id = format!("{policy_id}/{sub_policy_name}");
-            let rhai_eval_env = eval_env.clone();
+            let rhai_eval_env = self.clone();
 
             let validate_request = req.clone();
             rhai_engine.register_fn(sub_policy_name.clone().as_str(), move || {
@@ -657,34 +595,27 @@ mod tests {
             &policies,
             &precompiled_policies,
             None,
+            None,
             callback_handler_tx,
             true,
         )
-    }
-
-    fn build_validator() -> Result<Validator> {
-        Ok(Validator {
-            always_accept_admission_reviews_on_namespace: None,
-            evaluation_environment: Arc::new(build_evaluation_environment()?),
-        })
     }
 
     #[rstest]
     #[case("policy_not_defined", true)]
     #[case("policy_1", false)]
     fn return_policy_not_found_error(#[case] policy_id: &str, #[case] expect_error: bool) {
-        let validator = build_validator().unwrap();
-        let evaluation_environment = validator.evaluation_environment.clone();
+        let evaluation_environment = Arc::new(build_evaluation_environment().unwrap());
         let validate_request =
             ValidateRequest::AdmissionRequest(build_admission_review_request().request);
 
         if expect_error {
             assert!(matches!(
-                validator.get_policy_mode(policy_id),
+                evaluation_environment.get_policy_mode(policy_id),
                 Err(EvaluationError::PolicyNotFound(_))
             ));
             assert!(matches!(
-                validator.get_policy_allowed_to_mutate(policy_id),
+                evaluation_environment.get_policy_allowed_to_mutate(policy_id),
                 Err(EvaluationError::PolicyNotFound(_))
             ));
             assert!(matches!(
@@ -692,12 +623,14 @@ mod tests {
                 Err(EvaluationError::PolicyNotFound(_))
             ));
             assert!(matches!(
-                validator.validate(policy_id, &validate_request),
+                evaluation_environment.validate(policy_id, &validate_request),
                 Err(EvaluationError::PolicyNotFound(_))
             ));
         } else {
-            assert!(validator.get_policy_mode(policy_id).is_ok());
-            assert!(validator.get_policy_allowed_to_mutate(policy_id).is_ok());
+            assert!(evaluation_environment.get_policy_mode(policy_id).is_ok());
+            assert!(evaluation_environment
+                .get_policy_allowed_to_mutate(policy_id)
+                .is_ok());
             assert!(evaluation_environment
                 .get_policy_settings(policy_id)
                 .is_ok());
@@ -728,15 +661,12 @@ mod tests {
         evaluation_environment
             .policy_initialization_errors
             .insert(policy_id.to_string(), "error".to_string());
-        let validator = Validator {
-            always_accept_admission_reviews_on_namespace: None,
-            evaluation_environment: Arc::new(evaluation_environment),
-        };
+        let evaluation_environment = Arc::new(evaluation_environment);
 
         let validate_request =
             ValidateRequest::AdmissionRequest(build_admission_review_request().request);
         assert!(matches!(
-            validator.validate(policy_id, &validate_request).unwrap_err(),
+            evaluation_environment.validate(policy_id, &validate_request).unwrap_err(),
             EvaluationError::PolicyInitialization(error) if error == "error"
         ));
     }

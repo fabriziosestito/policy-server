@@ -3,6 +3,6 @@ mod evaluation_environment;
 mod policy_evaluation_settings;
 pub(crate) mod precompiled_policy;
 
-// This is required to mock the `Validator` inside of our tests
+// This is required to mock the `EvaluationEnvironmento` inside of our tests
 #[mockall_double::double]
-pub(crate) use evaluation_environment::Validator;
+pub(crate) use evaluation_environment::EvaluationEnvironment;

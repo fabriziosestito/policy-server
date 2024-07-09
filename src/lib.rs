@@ -20,6 +20,7 @@ use axum::{
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use evaluation::EvaluationEnvironment;
 use policy_evaluator::{
     callback_handler::{CallbackHandler, CallbackHandlerBuilder},
     kube,
@@ -43,10 +44,7 @@ use crate::api::handlers::{
     validate_raw_handler,
 };
 use crate::api::state::ApiServerState;
-use crate::evaluation::{
-    precompiled_policy::{PrecompiledPolicies, PrecompiledPolicy},
-    Validator,
-};
+use crate::evaluation::precompiled_policy::{PrecompiledPolicies, PrecompiledPolicy};
 use crate::policy_downloader::{Downloader, FetchedPolicies};
 use config::Config;
 
@@ -155,7 +153,7 @@ impl PolicyServer {
             }
         }
 
-        let validator = Validator::new(
+        let evaluation_environment = EvaluationEnvironment::new(
             &engine,
             &config.policies,
             &precompiled_policies,
@@ -185,7 +183,7 @@ impl PolicyServer {
 
         let state = Arc::new(ApiServerState {
             semaphore: Semaphore::new(config.pool_size),
-            validator,
+            evaluation_environment: Arc::new(evaluation_environment),
         });
 
         let tls_config = if let Some(tls_config) = config.tls_config {

@@ -271,7 +271,7 @@ async fn acquire_semaphore_and_evaluate(
         let _enter = span.enter();
 
         evaluate(
-            &state.validator,
+            state.evaluation_environment.clone(),
             &policy_id,
             &validate_request,
             request_origin,
