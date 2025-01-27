@@ -13,6 +13,10 @@ target/release/policy-server: $(SOURCE_FILES) Cargo.*
 .PHONY: build
 build: target/release/policy-server
 
+.PHONY: generate
+generate:
+	cargo run --bin crdgen
+
 .PHONY: fmt
 fmt:
 	cargo fmt --all -- --check

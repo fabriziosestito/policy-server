@@ -13,6 +13,8 @@ pub mod metrics;
 pub mod profiling;
 pub mod tracing;
 
+pub mod controller;
+
 use ::tracing::{debug, info, warn, Level};
 use anyhow::{anyhow, Result};
 use axum::{

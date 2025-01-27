@@ -11,6 +11,15 @@ authors = [
 ]
 edition = "2021"
 
+[[bin]]
+name = "policyserver"
+path = "src/main.rs"
+
+[[bin]]
+name = "crdgen"
+path = "src/crdgen.rs"
+
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["cargo", "env"] }
@@ -19,6 +28,7 @@ futures = "0.3"
 itertools = "0.14.0"
 k8s-openapi = { version = "0.24.0", default-features = false, features = [
   "v1_30",
+  "schemars",
 ] }
 lazy_static = "1.4.0"
 mime = "0.3"
@@ -66,6 +76,10 @@ jemalloc_pprof = "0.6.0"
 tikv-jemalloc-ctl = "0.6.0"
 rhai = { version = "1.19.0", features = ["sync"] }
 tonic = { version = "0.12.3" }
+
+# Controller runtime
+schemars = { version = "0.8", features = ["chrono"] }
+kube = { version = "0.98", features = ["runtime", "client", "derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 inotify = "0.11"
