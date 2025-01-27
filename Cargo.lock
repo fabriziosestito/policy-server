@@ -2986,6 +2986,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ktest"
+version = "0.1.0"
+source = "git+https://github.com/fabriziosestito/ktest#364da18fe584558e01cf0b33d792d75d1c6c4613"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "serde_yaml",
+ "syn 2.0.96",
+ "testcontainers-modules",
+]
+
+[[package]]
 name = "kube"
 version = "0.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4400,6 +4413,7 @@ dependencies = [
  "itertools 0.14.0",
  "jemalloc_pprof",
  "k8s-openapi",
+ "ktest",
  "kube",
  "lazy_static",
  "mime",
@@ -4428,6 +4442,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "testcontainers",
+ "testcontainers-modules",
  "thiserror 2.0.11",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -6171,6 +6186,15 @@ dependencies = [
  "tokio-tar",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "testcontainers-modules"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4a531f812dedf1f0d844e69884d76fd7dd9b1967abc89550c6d270b2b55b9c"
+dependencies = [
+ "testcontainers",
 ]
 
 [[package]]

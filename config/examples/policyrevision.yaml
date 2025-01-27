@@ -1,0 +1,9 @@
+apiVersion: policies.kubewarden.io/v1
+kind: PolicyRevision
+metadata:
+  name: example-policyrevision
+  namespace: default
+spec:
+  enabled: true
+  data: {}
+status: {}
