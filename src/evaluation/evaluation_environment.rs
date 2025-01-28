@@ -111,6 +111,9 @@ pub(crate) struct EvaluationEnvironment {
 
     /// A Set containing the IDs of the policy groups.
     policy_groups: HashSet<PolicyID>,
+
+    // TODO: this is part of the POC of the policy revision controller
+    bananas: Arc<Mutex<String>>,
 }
 
 /// This structure is used to build the `EvaluationEnvironment` instance.
@@ -709,6 +712,14 @@ impl EvaluationEnvironment {
             audit_annotations: None,
             warnings: None,
         })
+    }
+
+    pub fn set_bananas(self: Arc<Self>, bananas: String) {
+        *self.bananas.lock().unwrap() = bananas;
+    }
+
+    pub fn bananas(self: Arc<Self>) -> String {
+        self.bananas.lock().unwrap().clone()
     }
 }
 

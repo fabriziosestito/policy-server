@@ -17,11 +17,13 @@ pub mod controller;
 
 use ::tracing::{debug, info, warn, Level};
 use anyhow::{anyhow, Result};
+use api::handlers::bananas_handler;
 use axum::{
     routing::{get, post},
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use controller::replica_reconciler;
 use evaluation::EvaluationEnvironmentBuilder;
 use policy_evaluator::{
     callback_handler::{CallbackHandler, CallbackHandlerBuilder},
@@ -69,6 +71,7 @@ pub struct PolicyServer {
     router: Router,
     callback_handler: CallbackHandler,
     callback_handler_shutdown_channel_tx: oneshot::Sender<()>,
+    replica_reconciler_context: replica_reconciler::Context,
     addr: SocketAddr,
     tls_config: Option<RustlsConfig>,
 }
@@ -208,6 +211,7 @@ impl PolicyServer {
             .route("/audit/{policy_id}", post(audit_handler))
             .route("/validate/{policy_id}", post(validate_handler))
             .route("/validate_raw/{policy_id}", post(validate_raw_handler))
+            .route("/bananas", get(bananas_handler))
             .with_state(state.clone())
             .layer(
                 TraceLayer::new_for_http()
@@ -227,10 +231,16 @@ impl PolicyServer {
             router = Router::new().merge(router).merge(pprof_router);
         }
 
+        let replica_reconciler_context = replica_reconciler::Context {
+            client: kube::Client::try_default().await?,
+            evaluation_environment: state.evaluation_environment.clone(),
+        };
+
         Ok(Self {
             router,
             callback_handler,
             callback_handler_shutdown_channel_tx,
+            replica_reconciler_context,
             addr: config.addr,
             tls_config,
         })
@@ -243,6 +253,11 @@ impl PolicyServer {
             info!(status = "init", "CallbackHandler task");
             callback_handler.loop_eval().await;
             info!(status = "exit", "CallbackHandler task");
+        });
+
+        let replica_reconciler = tokio::spawn(async move {
+            info!(status = "init", "Replica reconciler");
+            replica_reconciler::run(Arc::new(self.replica_reconciler_context)).await;
         });
 
         if let Some(tls_config) = self.tls_config {
@@ -264,6 +279,10 @@ impl PolicyServer {
         callback_handler
             .await
             .expect("Cannot wait for CallbackHandler to exit");
+
+        replica_reconciler
+            .await
+            .expect("Cannot wait for replica reconciler to exit");
 
         Ok(())
     }

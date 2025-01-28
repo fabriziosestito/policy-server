@@ -6,7 +6,6 @@ use kube::runtime::{watcher, Controller};
 use kube::Api;
 use kube::{runtime::controller::Action, Client};
 use thiserror::Error;
-use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::controller::crd::PolicyRevision;
@@ -14,7 +13,7 @@ use crate::evaluation::EvaluationEnvironment;
 
 pub struct Context {
     pub client: Client,
-    evaluation_environment: Arc<RwLock<EvaluationEnvironment>>,
+    pub evaluation_environment: Arc<EvaluationEnvironment>,
 }
 
 #[derive(Error, Debug)]
@@ -31,6 +30,10 @@ pub async fn reconcile(
         "Reconciling PolicyRevision: {}",
         policy_revision.metadata.name.as_ref().unwrap()
     );
+
+    ctx.evaluation_environment
+        .clone()
+        .set_bananas(policy_revision.metadata.name.as_ref().unwrap().to_string());
 
     Ok(Action::await_change())
 }
@@ -54,4 +57,3 @@ fn error_policy(
     warn!("reconcile failed: {:?}", error);
     Action::requeue(Duration::from_secs(5 * 60))
 }
-

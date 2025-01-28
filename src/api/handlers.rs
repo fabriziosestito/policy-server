@@ -177,6 +177,12 @@ pub(crate) async fn readiness_handler() -> StatusCode {
     StatusCode::OK
 }
 
+pub(crate) async fn bananas_handler(
+    extract::State(state): extract::State<Arc<ApiServerState>>,
+) -> Json<String> {
+    Json(state.evaluation_environment.clone().bananas())
+}
+
 #[derive(Deserialize)]
 pub(crate) struct ProfileParams {
     /// profiling frequency (Hz)
