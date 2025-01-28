@@ -1,5 +1,5 @@
 use kube::CustomResourceExt;
-use policy_server::controller::PolicyRevision;
+use policy_server::controller::crd::PolicyRevision;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
