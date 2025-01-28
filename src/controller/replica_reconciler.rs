@@ -9,11 +9,11 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::controller::crd::PolicyRevision;
-use crate::evaluation::EvaluationEnvironment;
+use crate::evaluation::{EvaluationEnvironment, SharedEvaluationEnvironment};
 
 pub struct Context {
     pub client: Client,
-    pub evaluation_environment: Arc<EvaluationEnvironment>,
+    pub evaluation_environment: SharedEvaluationEnvironment,
 }
 
 #[derive(Error, Debug)]
@@ -32,7 +32,6 @@ pub async fn reconcile(
     );
 
     ctx.evaluation_environment
-        .clone()
         .set_bananas(policy_revision.metadata.name.as_ref().unwrap().to_string());
 
     Ok(Action::await_change())

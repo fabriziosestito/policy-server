@@ -24,7 +24,7 @@ use axum::{
 };
 use axum_server::tls_rustls::RustlsConfig;
 use controller::replica_reconciler;
-use evaluation::EvaluationEnvironmentBuilder;
+use evaluation::{EvaluationEnvironmentBuilder, SharedEvaluationEnvironment};
 use policy_evaluator::{
     callback_handler::{CallbackHandler, CallbackHandlerBuilder},
     kube,
@@ -198,7 +198,7 @@ impl PolicyServer {
 
         let state = Arc::new(ApiServerState {
             semaphore: Semaphore::new(config.pool_size),
-            evaluation_environment: Arc::new(evaluation_environment),
+            evaluation_environment: SharedEvaluationEnvironment::new(evaluation_environment),
         });
 
         let tls_config = if let Some(tls_config) = config.tls_config {

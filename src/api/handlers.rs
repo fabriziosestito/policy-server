@@ -180,7 +180,7 @@ pub(crate) async fn readiness_handler() -> StatusCode {
 pub(crate) async fn bananas_handler(
     extract::State(state): extract::State<Arc<ApiServerState>>,
 ) -> Json<String> {
-    Json(state.evaluation_environment.clone().bananas())
+    Json(state.evaluation_environment.bananas())
 }
 
 #[derive(Deserialize)]

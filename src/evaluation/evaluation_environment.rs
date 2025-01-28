@@ -11,7 +11,7 @@ use rhai::EvalAltResult;
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -64,6 +64,248 @@ impl fmt::Display for PolicyGroupMemberEvaluationResult {
 /// The digest of a WebAssembly module
 type ModuleDigest = String;
 
+pub struct SharedEvaluationEnvironment(Arc<RwLock<EvaluationEnvironment>>);
+
+impl SharedEvaluationEnvironment {
+    /// Create a new `SharedEvaluationEnvironment` instance
+    pub fn new(eval_env: EvaluationEnvironment) -> Self {
+        Self(Arc::new(RwLock::new(eval_env)))
+    }
+
+    /// Perform a request validation
+    pub fn validate(
+        &self,
+        policy_id: &PolicyID,
+        req: &ValidateRequest,
+    ) -> Result<AdmissionResponse> {
+        let eval_env = self.0.read().unwrap();
+        if eval_env.policy_groups.contains(policy_id) {
+            self.validate_policy_group(policy_id, req)
+        } else {
+            self.validate_policy(policy_id, req)
+        }
+    }
+
+    /// Validate a policy.
+    ///
+    /// Note, `self` is wrapped inside of `Arc` because this method is called from within a Rhai engine closure that
+    /// requires `+send` and `+sync`.
+    fn validate_policy(
+        &self,
+        policy_id: &PolicyID,
+        req: &ValidateRequest,
+    ) -> Result<AdmissionResponse> {
+        debug!(?policy_id, "validate individual policy");
+
+        let eval_env = self.0.read().unwrap();
+
+        if let Some(error) = eval_env.policy_initialization_errors.get(policy_id) {
+            return Err(EvaluationError::PolicyInitialization(error.to_string()));
+        }
+
+        let settings: serde_json::Map<String, serde_json::Value> =
+            match eval_env.get_policy_settings(policy_id)?.settings {
+                PolicyOrPolicyGroupSettings::Policy(settings) => settings.into(),
+                _ => unreachable!(),
+            };
+        let mut evaluator = eval_env.rehydrate(policy_id)?;
+
+        Ok(evaluator.validate(req.clone(), &settings))
+    }
+
+    /// Validate a policy group
+    ///
+    /// Note, `self` is wrapped inside of `Arc` because the Rhai engine closure requires
+    /// `+send` and `+sync`.
+    fn validate_policy_group(
+        &self,
+        policy_id: &PolicyID,
+        req: &ValidateRequest,
+    ) -> Result<AdmissionResponse> {
+        let eval_env = self.0.read().unwrap();
+
+        let (expression, message, policies) =
+            match eval_env.get_policy_settings(policy_id)?.settings {
+                PolicyOrPolicyGroupSettings::PolicyGroup {
+                    expression,
+                    message,
+                    policies,
+                } => (expression, message, policies),
+                _ => unreachable!(),
+            };
+
+        // We create a RAW engine, which has a really limited set of built-ins available
+        let mut rhai_engine = rhai::Engine::new_raw();
+
+        // Keep track of all the evaluation results of the member policies
+        let policies_evaluation_results: Arc<
+            Mutex<HashMap<String, PolicyGroupMemberEvaluationResult>>,
+        > = Arc::new(Mutex::new(HashMap::new()));
+
+        let policy_ids = policies.clone();
+
+        for sub_policy_name in policies {
+            let sub_policy_id = PolicyID::PolicyGroupPolicy {
+                group: policy_id.to_string(),
+                name: sub_policy_name.clone(),
+            };
+            let rhai_eval_env = self.clone();
+            let evaluation_results = policies_evaluation_results.clone();
+
+            let validate_request = req.clone();
+            rhai_engine.register_fn(
+                sub_policy_name.clone().as_str(),
+                move || -> std::result::Result<bool, Box<EvalAltResult>> {
+                    let response = Self::validate_policy(
+                        &rhai_eval_env.clone(),
+                        &sub_policy_id,
+                        &validate_request,
+                    )
+                    .map_err(|e| {
+                        EvalAltResult::ErrorSystem(
+                            format!("error invoking #{sub_policy_id}"),
+                            Box::new(e),
+                        )
+                    })?;
+
+                    if response.patch.is_some() {
+                        // mutation is not allowed inside of group policies
+                        let mut results = evaluation_results.lock().unwrap();
+                        results.insert(
+                            sub_policy_name.clone(),
+                            PolicyGroupMemberEvaluationResult {
+                                allowed: false,
+                                message: Some(
+                                    "mutation is not allowed inside of policy group".to_string(),
+                                ),
+                            },
+                        );
+                        return Ok(false);
+                    }
+
+                    let allowed = response.allowed;
+
+                    let mut results = evaluation_results.lock().unwrap();
+                    results.insert(sub_policy_name.clone(), response.into());
+
+                    Ok(allowed)
+                },
+            );
+        }
+
+        let rhai_engine = rhai_engine;
+
+        // Note: we use `eval_expression` to limit even further what the user is allowed
+        // to define inside of the expression
+        let allowed = rhai_engine.eval_expression::<bool>(expression.as_str())?;
+
+        // The details of each policy evaluation are returned as part of the
+        // AdmissionResponse.status.details.causes
+        let mut status_causes = vec![];
+
+        let evaluation_results = policies_evaluation_results.lock().unwrap();
+
+        for policy_id in &policy_ids {
+            if let Some(result) = evaluation_results.get(policy_id) {
+                if !result.allowed {
+                    let cause = admission_response::StatusCause {
+                        field: Some(format!("spec.policies.{}", policy_id)),
+                        message: result.message.clone(),
+                        ..Default::default()
+                    };
+                    status_causes.push(cause);
+                }
+            }
+        }
+        debug!(
+            ?policy_id,
+            ?allowed,
+            ?status_causes,
+            "policy group evaluation result"
+        );
+
+        let status = if allowed {
+            // The status field is discarded by the Kubernetes API server when the
+            // request is allowed.
+            None
+        } else {
+            Some(AdmissionResponseStatus {
+                message: Some(message),
+                code: None,
+                details: Some(admission_response::StatusDetails {
+                    causes: status_causes,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        };
+
+        Ok(AdmissionResponse {
+            uid: req.uid().to_string(),
+            allowed,
+            patch_type: None,
+            patch: None,
+            status,
+            audit_annotations: None,
+            warnings: None,
+        })
+    }
+
+    /// Given a policy ID, return how the policy operates
+    pub(crate) fn get_policy_mode(&self, policy_id: &PolicyID) -> Result<PolicyMode> {
+        self.0
+            .read()
+            .unwrap()
+            .policy_id_to_settings
+            .get(policy_id)
+            .map(|settings| settings.policy_mode.clone())
+            .ok_or(EvaluationError::PolicyNotFound(policy_id.to_string()))
+    }
+
+    /// Given a policy ID, returns true if the policy is allowed to mutate
+    pub(crate) fn get_policy_allowed_to_mutate(&self, policy_id: &PolicyID) -> Result<bool> {
+        self.0
+            .read()
+            .unwrap()
+            .policy_id_to_settings
+            .get(policy_id)
+            .map(|settings| settings.allowed_to_mutate)
+            .ok_or(EvaluationError::PolicyNotFound(policy_id.to_string()))
+    }
+
+    /// Returns `true` if the given `namespace` is the special Namespace that is ignored by all
+    /// the policies
+    pub(crate) fn should_always_accept_requests_made_inside_of_namespace(
+        &self,
+        namespace: &str,
+    ) -> bool {
+        self.0
+            .read()
+            .unwrap()
+            .always_accept_admission_reviews_on_namespace
+            .as_deref()
+            == Some(namespace)
+    }
+
+    pub fn set_bananas(&self, bananas: String) {
+        let mut eval_env = self.0.write().unwrap();
+
+        eval_env.bananas = bananas;
+    }
+
+    pub fn bananas(&self) -> String {
+        let eval_env = self.0.read().unwrap();
+
+        eval_env.bananas.clone()
+    }
+}
+
+impl Clone for SharedEvaluationEnvironment {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 /// This structure contains all the policies defined by the user inside of the `policies.yml`.
 /// It also provides helper methods to perform the validation of a request and the validation
 /// of the settings provided by the user.
@@ -113,7 +355,7 @@ pub(crate) struct EvaluationEnvironment {
     policy_groups: HashSet<PolicyID>,
 
     // TODO: this is part of the POC of the policy revision controller
-    bananas: Arc<Mutex<String>>,
+    bananas: String,
 }
 
 /// This structure is used to build the `EvaluationEnvironment` instance.
@@ -357,15 +599,6 @@ impl<'engine, 'precompiled_policies> EvaluationEnvironmentBuilder<'engine, 'prec
 #[cfg_attr(test, automock)]
 #[cfg_attr(test, allow(dead_code))]
 impl EvaluationEnvironment {
-    /// Returns `true` if the given `namespace` is the special Namespace that is ignored by all
-    /// the policies
-    pub(crate) fn should_always_accept_requests_made_inside_of_namespace(
-        &self,
-        namespace: &str,
-    ) -> bool {
-        self.always_accept_admission_reviews_on_namespace.as_deref() == Some(namespace)
-    }
-
     /// Register a new policy. It takes care of creating a new `PolicyEvaluator` (when needed).
     /// This is used to register both individual policies and the ones that are part of a group
     /// policy.
@@ -429,22 +662,6 @@ impl EvaluationEnvironment {
         self.policy_id_to_settings
             .insert(policy_id.to_owned(), policy_evaluation_settings);
         self.policy_groups.insert(policy_id.to_owned());
-    }
-
-    /// Given a policy ID, return how the policy operates
-    pub(crate) fn get_policy_mode(&self, policy_id: &PolicyID) -> Result<PolicyMode> {
-        self.policy_id_to_settings
-            .get(policy_id)
-            .map(|settings| settings.policy_mode.clone())
-            .ok_or(EvaluationError::PolicyNotFound(policy_id.to_string()))
-    }
-
-    /// Given a policy ID, returns true if the policy is allowed to mutate
-    pub(crate) fn get_policy_allowed_to_mutate(&self, policy_id: &PolicyID) -> Result<bool> {
-        self.policy_id_to_settings
-            .get(policy_id)
-            .map(|settings| settings.allowed_to_mutate)
-            .ok_or(EvaluationError::PolicyNotFound(policy_id.to_string()))
     }
 
     /// Given a policy ID, returns the settings provided by the user inside of `policies.yml`
@@ -539,187 +756,6 @@ impl EvaluationEnvironment {
         policy_evaluator_pre.rehydrate(eval_ctx).map_err(|e| {
             EvaluationError::WebAssemblyError(format!("cannot rehydrate PolicyEvaluatorPre: {e}"))
         })
-    }
-
-    /// Perform a request validation
-    pub fn validate(
-        self: Arc<Self>,
-        policy_id: &PolicyID,
-        req: &ValidateRequest,
-    ) -> Result<AdmissionResponse> {
-        if self.policy_groups.contains(policy_id) {
-            self.validate_policy_group(policy_id, req)
-        } else {
-            self.validate_policy(policy_id, req)
-        }
-    }
-
-    /// Validate a policy.
-    ///
-    /// Note, `self` is wrapped inside of `Arc` because this method is called from within a Rhai engine closure that
-    /// requires `+send` and `+sync`.
-    fn validate_policy(
-        self: Arc<Self>,
-        policy_id: &PolicyID,
-        req: &ValidateRequest,
-    ) -> Result<AdmissionResponse> {
-        debug!(?policy_id, "validate individual policy");
-
-        if let Some(error) = self.policy_initialization_errors.get(policy_id) {
-            return Err(EvaluationError::PolicyInitialization(error.to_string()));
-        }
-
-        let settings: serde_json::Map<String, serde_json::Value> =
-            match self.get_policy_settings(policy_id)?.settings {
-                PolicyOrPolicyGroupSettings::Policy(settings) => settings.into(),
-                _ => unreachable!(),
-            };
-        let mut evaluator = self.rehydrate(policy_id)?;
-
-        Ok(evaluator.validate(req.clone(), &settings))
-    }
-
-    /// Validate a policy group
-    ///
-    /// Note, `self` is wrapped inside of `Arc` because the Rhai engine closure requires
-    /// `+send` and `+sync`.
-    fn validate_policy_group(
-        self: Arc<Self>,
-        policy_id: &PolicyID,
-        req: &ValidateRequest,
-    ) -> Result<AdmissionResponse> {
-        let (expression, message, policies) = match self.get_policy_settings(policy_id)?.settings {
-            PolicyOrPolicyGroupSettings::PolicyGroup {
-                expression,
-                message,
-                policies,
-            } => (expression, message, policies),
-            _ => unreachable!(),
-        };
-
-        // We create a RAW engine, which has a really limited set of built-ins available
-        let mut rhai_engine = rhai::Engine::new_raw();
-
-        // Keep track of all the evaluation results of the member policies
-        let policies_evaluation_results: Arc<
-            Mutex<HashMap<String, PolicyGroupMemberEvaluationResult>>,
-        > = Arc::new(Mutex::new(HashMap::new()));
-
-        let policy_ids = policies.clone();
-
-        for sub_policy_name in policies {
-            let sub_policy_id = PolicyID::PolicyGroupPolicy {
-                group: policy_id.to_string(),
-                name: sub_policy_name.clone(),
-            };
-            let rhai_eval_env = self.clone();
-            let evaluation_results = policies_evaluation_results.clone();
-
-            let validate_request = req.clone();
-            rhai_engine.register_fn(
-                sub_policy_name.clone().as_str(),
-                move || -> std::result::Result<bool, Box<EvalAltResult>> {
-                    let response = Self::validate_policy(
-                        rhai_eval_env.clone(),
-                        &sub_policy_id,
-                        &validate_request,
-                    )
-                    .map_err(|e| {
-                        EvalAltResult::ErrorSystem(
-                            format!("error invoking #{sub_policy_id}"),
-                            Box::new(e),
-                        )
-                    })?;
-
-                    if response.patch.is_some() {
-                        // mutation is not allowed inside of group policies
-                        let mut results = evaluation_results.lock().unwrap();
-                        results.insert(
-                            sub_policy_name.clone(),
-                            PolicyGroupMemberEvaluationResult {
-                                allowed: false,
-                                message: Some(
-                                    "mutation is not allowed inside of policy group".to_string(),
-                                ),
-                            },
-                        );
-                        return Ok(false);
-                    }
-
-                    let allowed = response.allowed;
-
-                    let mut results = evaluation_results.lock().unwrap();
-                    results.insert(sub_policy_name.clone(), response.into());
-
-                    Ok(allowed)
-                },
-            );
-        }
-
-        let rhai_engine = rhai_engine;
-
-        // Note: we use `eval_expression` to limit even further what the user is allowed
-        // to define inside of the expression
-        let allowed = rhai_engine.eval_expression::<bool>(expression.as_str())?;
-
-        // The details of each policy evaluation are returned as part of the
-        // AdmissionResponse.status.details.causes
-        let mut status_causes = vec![];
-
-        let evaluation_results = policies_evaluation_results.lock().unwrap();
-
-        for policy_id in &policy_ids {
-            if let Some(result) = evaluation_results.get(policy_id) {
-                if !result.allowed {
-                    let cause = admission_response::StatusCause {
-                        field: Some(format!("spec.policies.{}", policy_id)),
-                        message: result.message.clone(),
-                        ..Default::default()
-                    };
-                    status_causes.push(cause);
-                }
-            }
-        }
-        debug!(
-            ?policy_id,
-            ?allowed,
-            ?status_causes,
-            "policy group evaluation result"
-        );
-
-        let status = if allowed {
-            // The status field is discarded by the Kubernetes API server when the
-            // request is allowed.
-            None
-        } else {
-            Some(AdmissionResponseStatus {
-                message: Some(message),
-                code: None,
-                details: Some(admission_response::StatusDetails {
-                    causes: status_causes,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            })
-        };
-
-        Ok(AdmissionResponse {
-            uid: req.uid().to_string(),
-            allowed,
-            patch_type: None,
-            patch: None,
-            status,
-            audit_annotations: None,
-            warnings: None,
-        })
-    }
-
-    pub fn set_bananas(self: Arc<Self>, bananas: String) {
-        *self.bananas.lock().unwrap() = bananas;
-    }
-
-    pub fn bananas(self: Arc<Self>) -> String {
-        self.bananas.lock().unwrap().clone()
     }
 }
 

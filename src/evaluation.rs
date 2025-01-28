@@ -6,6 +6,7 @@ pub(crate) mod precompiled_policy;
 // This is required to mock the `EvaluationEnvironment` inside of our tests
 #[mockall_double::double]
 pub(crate) use evaluation_environment::EvaluationEnvironment;
+pub(crate) use evaluation_environment::SharedEvaluationEnvironment;
 
 pub(crate) use evaluation_environment::EvaluationEnvironmentBuilder;
 
