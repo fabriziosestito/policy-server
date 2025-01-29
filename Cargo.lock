@@ -646,7 +646,6 @@ dependencies = [
 [[package]]
 name = "burrego"
 version = "0.3.4"
-source = "git+https://github.com/kubewarden/policy-evaluator?tag=v0.19.9#b93a2f3ee4d88ff1c19fe7e3fd3bd1642bffb3d9"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2188,6 +2187,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashify"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f208758247e68e239acaa059e72e4ce1f30f2a4b6523f19c1b923d25b7e9cceb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "headers"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2977,6 +2987,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-openapi-codegen-common"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c69df40d33fc50cd9217f9b6a79e8f87609d4f7e152bdd22734a8b68add076a"
+
+[[package]]
+name = "k8s-openapi-derive"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88d9776ad8a03b53b5ae7d8f1ed5f0f693ae54939ef1bee240be05f0b7c47b0c"
+dependencies = [
+ "k8s-openapi-codegen-common",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.96",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3111,18 +3139,20 @@ dependencies = [
 
 [[package]]
 name = "kubewarden-policy-sdk"
-version = "0.11.3"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07b12fa5556b12e26d07b12fb258bd1f16b7d7b14a5df3998ea43125f43fc186"
+checksum = "0c8be8ac5470418e3f5505c59a98bd96fe7a4f7647d55b24eab5c56129974d38"
 dependencies = [
  "anyhow",
  "cfg-if",
  "chrono",
  "k8s-openapi",
+ "k8s-openapi-derive",
  "num",
  "num-derive",
  "num-traits",
  "oci-spec",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3315,11 +3345,12 @@ dependencies = [
 
 [[package]]
 name = "mail-parser"
-version = "0.9.4"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93c3b9e5d8b17faf573330bbc43b37d6e918c0a3bf8a88e7d0a220ebc84af9fc"
+checksum = "187a2b93c4c8c32f552ee06c2d99915e575de2fc7e04b07891c9edfee5b8edd6"
 dependencies = [
  "encoding_rs",
+ "hashify",
  "serde",
 ]
 
@@ -4327,7 +4358,6 @@ checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
 [[package]]
 name = "policy-evaluator"
 version = "0.19.8"
-source = "git+https://github.com/kubewarden/policy-evaluator?tag=v0.19.9#b93a2f3ee4d88ff1c19fe7e3fd3bd1642bffb3d9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

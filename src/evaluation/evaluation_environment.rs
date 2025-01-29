@@ -298,6 +298,27 @@ impl SharedEvaluationEnvironment {
 
         eval_env.bananas.clone()
     }
+
+    pub fn register(
+        &self,
+        engine: &wasmtime::Engine,
+        policy_id: &PolicyID,
+        policy_evaluation_settings: PolicyEvaluationSettings,
+        eval_ctx: EvaluationContext,
+        precompiled_policy: &PrecompiledPolicy,
+        policy_evaluation_limit_seconds: Option<u64>,
+    ) -> Result<()> {
+        let mut eval_env = self.0.write().unwrap();
+
+        eval_env.register(
+            engine,
+            policy_id,
+            policy_evaluation_settings,
+            eval_ctx,
+            precompiled_policy,
+            policy_evaluation_limit_seconds,
+        )
+    }
 }
 
 impl Clone for SharedEvaluationEnvironment {

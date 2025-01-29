@@ -280,7 +280,7 @@ impl From<PolicyMode> for String {
 
 /// Settings specified by the user for a given policy.
 #[derive(Debug, Clone, Default)]
-pub struct SettingsJSON(serde_json::Map<String, serde_json::Value>);
+pub struct SettingsJSON(pub serde_json::Map<String, serde_json::Value>);
 
 impl From<SettingsJSON> for serde_json::Map<String, serde_json::Value> {
     fn from(val: SettingsJSON) -> Self {

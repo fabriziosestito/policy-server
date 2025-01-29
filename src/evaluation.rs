@@ -7,6 +7,7 @@ pub(crate) mod precompiled_policy;
 #[mockall_double::double]
 pub(crate) use evaluation_environment::EvaluationEnvironment;
 pub(crate) use evaluation_environment::SharedEvaluationEnvironment;
+pub(crate) use policy_evaluation_settings::PolicyEvaluationSettings;
 
 pub(crate) use evaluation_environment::EvaluationEnvironmentBuilder;
 

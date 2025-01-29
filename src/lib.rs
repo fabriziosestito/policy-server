@@ -234,6 +234,7 @@ impl PolicyServer {
         let replica_reconciler_context = replica_reconciler::Context {
             client: kube::Client::try_default().await?,
             evaluation_environment: state.evaluation_environment.clone(),
+            engine: engine.clone(),
         };
 
         Ok(Self {

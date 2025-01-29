@@ -5,5 +5,16 @@ metadata:
   namespace: default
 spec:
   enabled: true
-  data: {}
-status: {}
+  data:
+    module: "annotated-policy.wasm"
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations:
+          - CREATE
+          - UPDATE
+    settings:
+      denied_labels:
+        - foo
+        - bar
